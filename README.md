@@ -2,7 +2,7 @@
 
 **Version:** 1.0.1
 
-[![Build Status](https://dev.azure.com/osieng/engineering/_apis/build/status/product-readiness/OMF/OMF_Temp_Python?branchName=master)](https://dev.azure.com/osieng/engineering/_build/latest?definitionId=2164&branchName=master)
+[![Build Status](https://dev.azure.com/osieng/engineering/_apis/build/status/product-readiness/OMF/osisoft.sample-omf-temperature_sensor-python?repoName=osisoft%2Fsample-omf-temperature_sensor-python&branchName=master)](https://dev.azure.com/osieng/engineering/_build/latest?definitionId=2641&repoName=osisoft%2Fsample-omf-temperature_sensor-python&branchName=master)
 
 This sample uses OSIsoft Message Format to send real time data from a temperature sensor (or random sample values) to OSIsoft Cloud Services, Edge Data Store, and/or PI Web API. Once the sample is started, the sample periodically collects (or generates) values for temperature until it reaches a specified number of values. At each interval it then sends that data to each of the configured OMF endpoints.
 
