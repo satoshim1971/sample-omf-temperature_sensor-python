@@ -60,5 +60,5 @@ The test sends a single value message to each configured endpoint instead of rep
 
 ---
 
-For the OMF landing page [ReadMe](../../../)  
-For the OSIsoft Samples landing page [ReadMe](https://github.com/osisoft/OSI-Samples)
+For the main OMF samples page on master [ReadMe](https://github.com/osisoft/OSI-Samples-OMF)  
+For the main OSIsoft samples page on master [ReadMe](https://github.com/osisoft/OSI-Samples)
