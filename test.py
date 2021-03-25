@@ -1,12 +1,12 @@
 import unittest
-from .program import main
+import program as program
 
 
 class SampleTests(unittest.TestCase):
 
     @classmethod
     def test_main(cls):
-        main(True)
+        program.main(True)
 
 
 if __name__ == "__main__":

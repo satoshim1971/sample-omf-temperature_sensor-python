@@ -11,15 +11,12 @@ import json
 import requests
 import time
 import datetime
-import platform
-import socket
 import gzip
 import random
 import traceback
-import base64
-import urllib3
 import distutils.util
 import xml.etree.ElementTree as ET
+from urllib.parse import urlparse
 
 # Specify whether to compress OMF message before
 # sending it to ingress endpoint
@@ -119,6 +116,16 @@ def checkResponse(response, msg_headers, message_type, message_omf_json):
             message_type=message_type, status=response.status_code, reason=response.text))
 
 
+def sanitizeHeaders(headers):
+    validated_headers = {}
+
+    for key in headers:
+        if key in {'Authorization', 'messagetype', 'action', 'messageformat', 'omfversion', 'x-requested-with'}:
+            validated_headers[key] = headers[key]
+
+    return validated_headers
+
+
 def getOcsHeaders(compression="", message_type="", action=""):
     # Assemble headers
     token = getToken()
@@ -133,7 +140,7 @@ def getOcsHeaders(compression="", message_type="", action=""):
     if(USE_COMPRESSION):
         msg_headers["compression"] = compression
 
-    return msg_headers
+    return sanitizeHeaders(msg_headers)
 
 
 def getEdsHeaders(compression="", message_type="", action=""):
@@ -185,9 +192,13 @@ def getToken():
         raise ValueError
 
     tokenEndpoint = json.loads(discoveryUrl.content)["token_endpoint"]
+    tokenUrl = urlparse(tokenEndpoint)
+    # Validate URL
+    assert tokenUrl.scheme == 'https'
+    assert tokenUrl.geturl().startswith(resourceBase)
 
     tokenInformation = requests.post(
-        tokenEndpoint,
+        tokenUrl.geturl(),
         data={"client_id": clientId,
               "client_secret": clientSecret,
               "grant_type": "client_credentials"})
