@@ -6,7 +6,7 @@
 # ************************************************************************
 # Import necessary packages
 # ************************************************************************
-import configparser
+import enum
 import json
 import requests
 import time
@@ -18,105 +18,163 @@ import distutils.util
 import xml.etree.ElementTree as ET
 from urllib.parse import urlparse
 
-# Specify whether to compress OMF message before
-# sending it to ingress endpoint
-USE_COMPRESSION = False
 
-# OMF Destinations
-OcsOmfUrl = None
-EdsOmfUrl = None
-PiOmfUrl = None
+ERROR_STRING = 'Error'
+TYPE_ID = 'Temperature.Float'
+CONTAINER_ID = 'Sample.Script.SL6658.Temperature'
 
-# Set this to True if your cert is trusted by the Python certify.
-# Set to False if you do not want to check the certificate (NOT RECOMMENDED)
-VERIFY_SSL = True
-
-# Specify the timeout, in seconds, for sending web requests
-# (if it takes longer than this to send a message, an error will be thrown)
-WEB_REQUEST_TIMEOUT_SECONDS = 30
-
-ERROR_STRING = "Error"
-TYPE_ID = "Temperature.Float"
-CONTAINER_ID = "Sample.Script.SL6658.Temperature"
-
-# Holder for user name and password combination
-userName = ""
-password = ""
-
-clientId = ""
-clientSecret = ""
-
-# OCS Token information
-__expiration = 0
-__token = ""
-
-# Holder for the omfEndPoint base if sending to OCS.  Auth and OMF endpoint are built from this.  It is set from the configuration
-resourceBase = ""
-
-# Holder for the sensor URL
-sensorUrl = ""
+# List of possible endpoint types
+class EndpointTypes(enum.Enum):
+    OCS = 'OCS'
+    EDS = 'EDS'
+    PI = 'PI'
 
 # The version of the OMF messages
-omfVersion = "1.1"
+omf_version = '1.1'
 
 
-def sendOmfMessageToEndpoint(message_type, message_omf_json, action='create'):
-    """
-    The function takes in a data object and a message type, and it sends an HTTPS
-    request to the target OMF endpoint (only PI Web API and EDS are supported in
-    the current implementation).
-    """
-    global omfVersion, userName, password, clientId, clientSecret
+def get_token(endpoint):
+    '''Gets the token for the omfendpoint'''
+
+    endpoint_type = endpoint["EndpointType"]
+    # return an empty string if the endpoint is not an OCS type
+    if endpoint_type != EndpointTypes.OCS:
+        return ''
+
+    if (('expiration' in endpoint) and (endpoint["expiration"] - time.time()) > 5 * 60):
+        return endpoint["token"]
+
+    # we can't short circuit it, so we must go retreive it.
+
+    discovery_url = requests.get(
+        endpoint["Resource"] + '/identity/.well-known/openid-configuration',
+        headers={'Accept': 'application/json'},
+        verify=endpoint["VerifySSL"])
+
+    if discovery_url.status_code < 200 or discovery_url.status_code >= 300:
+        discovery_url.close()
+        raise Exception(f'Failed to get access token endpoint from discovery URL: {discovery_url.status_code}:{discovery_url.text}')
+
+    token_endpoint = json.loads(discovery_url.content)["token_endpoint"]
+    token_url = urlparse(token_endpoint)
+    # Validate URL
+    assert token_url.scheme == 'https'
+    assert token_url.geturl().startswith(endpoint["Resource"])
+
+    token_information = requests.post(
+        token_url.geturl(),
+        data={'client_id': endpoint["ClientId"],
+              'client_secret': endpoint["ClientSecret"],
+              'grant_type': 'client_credentials'},
+        verify=endpoint["VerifySSL"])
+
+    token = json.loads(token_information.content)
+
+    if token is None:
+        raise Exception('Failed to retrieve Token')
+
+    __expiration = float(token["expires_in"]) + time.time()
+    __token = token["access_token"]
+
+    # cache the results
+    endpoint["expiration"] = __expiration
+    endpoint["token"] = __token
+
+    return __token
+
+
+def send_message_to_omf_endpoint(endpoint, message_type, message_omf_json, action='create'):
+    '''Sends the request out to the preconfigured endpoint'''
 
     # Compress json omf payload, if specified
     compression = 'none'
-    if USE_COMPRESSION:
+    if endpoint["UseCompression"]:
         msg_body = gzip.compress(bytes(json.dumps(message_omf_json), 'utf-8'))
         compression = 'gzip'
     else:
         msg_body = json.dumps(message_omf_json)
 
-    if (OcsOmfUrl):
-        msg_headers = getOcsHeaders(compression, message_type, action)
-        response = requests.post(
-            OcsOmfUrl,
-            headers=msg_headers,
-            data=msg_body,
-            timeout=WEB_REQUEST_TIMEOUT_SECONDS)
-        checkResponse(response, msg_headers, message_type, message_omf_json)
-    if (EdsOmfUrl):
-        msg_headers = getEdsHeaders(compression, message_type, action)
-        response = requests.post(
-            EdsOmfUrl,
-            headers=msg_headers,
-            data=msg_body,
-            timeout=WEB_REQUEST_TIMEOUT_SECONDS)
-        checkResponse(response, msg_headers, message_type, message_omf_json)
-    if (PiOmfUrl):
-        msg_headers = getPiHeaders(compression, message_type, action)
-        response = requests.post(
-            PiOmfUrl,
-            headers=msg_headers,
-            data=msg_body,
-            verify=VERIFY_SSL,
-            timeout=WEB_REQUEST_TIMEOUT_SECONDS,
-            auth=(userName, password))
-        checkResponse(response, msg_headers, message_type, message_omf_json)
+    # Collect the message headers
+    msg_headers = get_headers(endpoint, compression, message_type, action)
 
+    # Send message to OMF endpoint
+    endpoints_type = endpoint["EndpointType"]
+    response = {}
+    # If the endpoint is OCS
+    if endpoints_type == EndpointTypes.OCS:
+        response = requests.post(
+            endpoint["OmfEndpoint"],
+            headers=msg_headers,
+            data=msg_body,
+            verify=endpoint["VerifySSL"],
+            timeout=endpoint["WebRequestTimeoutSeconds"]
+        )
+    # If the endpoint is EDS
+    elif endpoints_type == EndpointTypes.EDS:
+        response = requests.post(
+            endpoint["OmfEndpoint"],
+            headers=msg_headers,
+            data=msg_body,
+            timeout=endpoint["WebRequestTimeoutSeconds"]
+        )
+    # If the endpoint is PI
+    elif endpoints_type == EndpointTypes.PI:
+        response = requests.post(
+            endpoint["OmfEndpoint"],
+            headers=msg_headers,
+            data=msg_body,
+            verify=endpoint["VerifySSL"],
+            timeout=endpoint["WebRequestTimeoutSeconds"],
+            auth=(endpoint["Username"], endpoint["Password"])
+        )
 
-def checkResponse(response, msg_headers, message_type, message_omf_json):
-    # Response code in 200s if the request was successful!
+    # Check for 409, which indicates that a type with the specified ID and version already exists.
+    if response.status_code == 409:
+        return
+
+    # response code in 200s if the request was successful!
     if response.status_code < 200 or response.status_code >= 300:
         print(msg_headers)
         response.close()
-        print('Response from OMF endpoint was bad.  "{0}" message: {1} {2}.  Message holdings: {3}'.format(
-            message_type, response.status_code, response.text, message_omf_json))
+        print(
+            f'Response from relay was bad. {message_type} message: {response.status_code} {response.text}.  Message holdings: {message_omf_json}')
         print()
-        raise Exception("OMF message was unsuccessful, {message_type}. {status}:{reason}".format(
-            message_type=message_type, status=response.status_code, reason=response.text))
+        raise Exception(f'OMF message was unsuccessful, {message_type}. {response.status_code}:{response.text}')
 
 
-def sanitizeHeaders(headers):
+def get_headers(endpoint, compression='', message_type='', action=''):
+    '''Assemble headers for sending to the endpoint's OMF endpoint'''
+
+    endpoint_type = endpoint["EndpointType"]
+
+    msg_headers = {
+        'messagetype': message_type,
+        'action': action,
+        'messageformat': 'JSON',
+        'omfversion': omf_version
+    }
+
+    if(compression == 'gzip'):
+        msg_headers["compression"] = 'gzip'
+
+    # If the endpoint is OCS
+    if endpoint_type == EndpointTypes.OCS:
+        msg_headers["Authorization"] = f'Bearer {get_token(endpoint)}'
+    # If the endpoint is PI
+    elif endpoint_type == EndpointTypes.PI:
+        msg_headers["x-requested-with"] = 'xmlhttprequest'
+
+    # validate headers to prevent injection attacks
+    validated_headers = {}
+
+    for key in msg_headers:
+        if key in {'Authorization', 'messagetype', 'action', 'messageformat', 'omfversion', 'x-requested-with', 'compression'}:
+            validated_headers[key] = msg_headers[key]
+
+    return validated_headers
+
+
+def sanitize_headers(headers):
     validated_headers = {}
 
     for key in headers:
@@ -126,107 +184,20 @@ def sanitizeHeaders(headers):
     return validated_headers
 
 
-def getOcsHeaders(compression="", message_type="", action=""):
-    # Assemble headers
-    token = getToken()
-    msg_headers = {
-        'messagetype': message_type,
-        'action': action,
-        'messageformat': 'JSON',
-        'omfversion': omfVersion,
-        'Authorization': "Bearer %s" % token
-    }
-
-    if(USE_COMPRESSION):
-        msg_headers["compression"] = compression
-
-    return sanitizeHeaders(msg_headers)
-
-
-def getEdsHeaders(compression="", message_type="", action=""):
-    # Assemble headers
-    msg_headers = {
-        'messagetype': message_type,
-        'action': action,
-        'messageformat': 'JSON',
-        'omfversion': omfVersion
-    }
-
-    if(USE_COMPRESSION):
-        msg_headers["compression"] = compression
-
-    return msg_headers
-
-
-def getPiHeaders(compression="", message_type="", action=""):
-    # Assemble headers
-    msg_headers = {
-        'messagetype': message_type,
-        'action': action,
-        'messageformat': 'JSON',
-        'omfversion': omfVersion,
-        'x-requested-with': 'xmlhttprequest'
-    }
-
-    if(USE_COMPRESSION):
-        msg_headers["compression"] = compression
-
-    return msg_headers
-
-
-def getToken():
-    # Gets the token for the omf endpoint
-    global __expiration, __token, resourceBase, clientId, clientSecret
-
-    if ((__expiration - time.time()) > 5 * 60):
-        return __token
-
-    discoveryUrl = requests.get(
-        resourceBase + "/identity/.well-known/openid-configuration",
-        headers={"Accept": "application/json"})
-
-    if discoveryUrl.status_code < 200 or discoveryUrl.status_code >= 300:
-        discoveryUrl.close()
-        print("Failed to get access token endpoint from discovery URL: {status}:{reason}".
-              format(status=discoveryUrl.status_code, reason=discoveryUrl.text))
-        raise ValueError
-
-    tokenEndpoint = json.loads(discoveryUrl.content)["token_endpoint"]
-    tokenUrl = urlparse(tokenEndpoint)
-    # Validate URL
-    assert tokenUrl.scheme == 'https'
-    assert tokenUrl.geturl().startswith(resourceBase)
-
-    tokenInformation = requests.post(
-        tokenUrl.geturl(),
-        data={"client_id": clientId,
-              "client_secret": clientSecret,
-              "grant_type": "client_credentials"})
-
-    token = json.loads(tokenInformation.content)
-
-    if token is None:
-        raise Exception("Failed to retrieve Token")
-
-    __expiration = float(token['expires_in']) + time.time()
-    __token = token['access_token']
-    return __token
-
-
-def oneTimeSendCreates():
+def one_time_send_creates(endpoint):
     action = 'create'
-    oneTimeSendType(action)
-    oneTimeSendContainer(action)
-    oneTimeSendData(action)
+    one_time_send_type(endpoint, action)
+    one_time_send_container(endpoint, action)
+    one_time_send_data(endpoint, action)
 
 
-def oneTimeSendDeletes():
+def one_time_send_deletes(endpoint):
     print()
     print("Deleting sample data...")
     print()
     action = 'delete'
     try:
-        oneTimeSendData(action)
+        one_time_send_data(endpoint, action)
     except Exception as ex:
         print()
         # Ignore errors in deletes to ensure we clean up as much as possible
@@ -234,7 +205,7 @@ def oneTimeSendDeletes():
         print()
 
     try:
-        oneTimeSendContainer(action)
+        one_time_send_container(endpoint, action)
     except Exception as ex:
         print()
         # Ignore errors in deletes to ensure we clean up as much as possible
@@ -242,7 +213,7 @@ def oneTimeSendDeletes():
         print()
 
     try:
-        oneTimeSendType(action)
+        one_time_send_type(endpoint, action)
     except Exception as ex:
         print()
         # Ignore errors in deletes to ensure we clean up as much as possible
@@ -250,9 +221,9 @@ def oneTimeSendDeletes():
         print()
 
 
-def oneTimeSendType(action):
+def one_time_send_type(endpoint, action):
     # OMF Type messages
-    sendOmfMessageToEndpoint("type", [
+    send_message_to_omf_endpoint(endpoint, "type", [
         {
             "id": "RemoteAssets.RootType",
             "classification": "static",
@@ -314,9 +285,9 @@ def oneTimeSendType(action):
     ], action)
 
 
-def oneTimeSendContainer(action):
+def one_time_send_container(endpoint, action):
     # OMF Container message to create a container for our measurement
-    sendOmfMessageToEndpoint("container", [
+    send_message_to_omf_endpoint(endpoint, "container", [
         {
             "id": CONTAINER_ID,
             "name": "Temperature",
@@ -326,9 +297,9 @@ def oneTimeSendContainer(action):
     ], action)
 
 
-def oneTimeSendData(action):
+def one_time_send_data(endpoint, action):
     # OMF Data message to create static elements and create links in AF
-    sendOmfMessageToEndpoint("data", [
+    send_message_to_omf_endpoint(endpoint, "data", [
         {
             "typeid": "RemoteAssets.RootType",
             "values": [
@@ -376,14 +347,14 @@ def oneTimeSendData(action):
     ], action)
 
 
-def createDataValue(value):
+def create_data_value(value):
     """Creates a JSON packet containing data value for the container"""
     return [
         {
             "containerid": CONTAINER_ID,
             "values": [
                 {
-                    "Timestamp": getCurrentTime(),
+                    "Timestamp": get_current_time(),
                     "Temperature": value
                 }
             ]
@@ -391,13 +362,13 @@ def createDataValue(value):
     ]
 
 
-def getRandomValue():
+def get_random_value():
     """Returns random integer value in 200 - 500 range"""
     value = random.randrange(200, 500)
     return str(value)
 
 
-def getSensorValue(sensor_url):
+def get_sensor_value(sensor_url):
     """Simple data collection logic"""
     try:
         response = requests.get(sensor_url)
@@ -415,20 +386,79 @@ def getSensorValue(sensor_url):
         return ERROR_STRING
 
 
-def getCurrentTime():
+def get_current_time():
     """Returns the current time in UTC format"""
     return datetime.datetime.utcnow().isoformat() + 'Z'
 
 
-def getConfig(section, field):
-    """Reads the config file for the field specified"""
-    config = configparser.ConfigParser()
-    config.read('config.ini')
-    return config.has_option(section, field) and config.get(section, field) or ""
+def get_json_file(filename):
+    ''' Get a json file by the path specified relative to the application's path'''
+
+    # Try to open the configuration file
+    try:
+        with open(
+            filename,
+            'r',
+        ) as f:
+            loaded_json = json.load(f)
+    except Exception as error:
+        print(f'Error: {str(error)}')
+        print(f'Could not open/read file: {filename}')
+        exit()
+
+    return loaded_json
+
+
+def get_appsettings():
+    ''' Return the appsettings.json as a json object, while also populating base_endpoint, omf_endpoint, and default values'''
+
+    # Try to open the configuration file
+    appsettings = get_json_file('appsettings.json')
+    endpoints = appsettings["Endpoints"]
+
+    # for each endpoint construct the check base and OMF endpoint and populate default values
+    for endpoint in endpoints:
+        endpoint["EndpointType"] = EndpointTypes(endpoint["EndpointType"])
+        endpoint_type = endpoint["EndpointType"]
+
+        # If the endpoint is OCS
+        if endpoint_type == EndpointTypes.OCS:
+            base_endpoint = f'{endpoint["Resource"]}/api/{endpoint["ApiVersion"]}' + \
+                f'/tenants/{endpoint["TenantId"]}/namespaces/{endpoint["NamespaceId"]}'
+
+        # If the endpoint is EDS
+        elif endpoint_type == EndpointTypes.EDS:
+            base_endpoint = f'{endpoint["Resource"]}/api/{endpoint["ApiVersion"]}' + \
+                f'/tenants/default/namespaces/default'
+
+        # If the endpoint is PI
+        elif endpoint_type == EndpointTypes.PI:
+            base_endpoint = endpoint["Resource"]
+
+        else:
+            raise ValueError('Invalid endpoint type')
+
+        omf_endpoint = f'{base_endpoint}/omf'
+
+        # add the base_endpoint and omf_endpoint to the endpoint configuration
+        endpoint["BaseEndpoint"] = base_endpoint
+        endpoint["OmfEndpoint"] = omf_endpoint
+
+        # check for optional/nullable parameters
+        if 'VerifySSL' not in endpoint or endpoint["VerifySSL"] == None:
+            endpoint["VerifySSL"] = True
+
+        if 'UseCompression' not in endpoint or endpoint["UseCompression"] == None:
+            endpoint["UseCompression"] = True
+
+        if 'WebRequestTimeoutSeconds' not in endpoint or endpoint["WebRequestTimeoutSeconds"] == None:
+            endpoint["WebRequestTimeoutSeconds"] = 30
+
+    return appsettings
 
 
 def main(test=False):
-    global omfVersion, userName, password, clientId, clientSecret, resourceBase, OcsOmfUrl, EdsOmfUrl, PiOmfUrl, VERIFY_SSL
+    global omfVersion
     try:
         print('------------------------------------------------------------------')
         print(' .d88888b.  888b     d888 8888888888        8888888b. Y88b   d88P ')
@@ -442,85 +472,60 @@ def main(test=False):
         print('------------------------------------------------------------------')
 
         # Sensor configuration
-        useRandom = getConfig('Configurations', 'UseRandom')
-        sensorUrl = getConfig('Configurations', 'SensorUrl')
+        appsettings = get_appsettings()
+        endpoints = appsettings.get('Endpoints')
+        useRandom = appsettings.get('UseRandom')
+        sensorUrl = appsettings.get('SensorUrl')
 
         # Scanning configuration
         iterationCount = (int)(
-            getConfig('Configurations', 'NumberOfIterations'))
+            appsettings.get('NumberOfIterations'))
         delayBetweenRequests = (int)(
-            getConfig('Configurations', 'DelayBetweenRequests'))
+            appsettings.get('DelayBetweenRequests'))
 
-        # Get OMF endpoint
-        SendToOcs = (bool)(distutils.util.strtobool(
-            getConfig('Configurations', 'SendToOcs')))
-        if (SendToOcs):
-            resourceBase = getConfig('Configurations', 'OcsUri')
-            OcsTenantId = getConfig('Configurations', 'OcsTenantId')
-            OcsNamespaceId = getConfig('Configurations', 'OcsNamespaceId')
-            clientId = getConfig('Configurations', 'OcsClientId')
-            clientSecret = getConfig('Configurations', 'OcsClientSecret')
-            OcsOmfUrl = resourceBase + '/api/v1/tenants/' + OcsTenantId + \
-                '/namespaces/' + OcsNamespaceId + '/omf'
+        for endpoint in endpoints:
+            if not endpoint["Selected"]:
+                continue
+            
+            one_time_send_creates(endpoint)
 
-        SendToEds = (bool)(distutils.util.strtobool(
-            getConfig('Configurations', 'SendToEds')))
-        if (SendToEds):
-            EdsPort = getConfig('Configurations', 'EdsPort')
-            EdsOmfUrl = 'http://localhost:' + EdsPort + \
-                '/api/v1/tenants/default/namespaces/default/omf'
+            count = 0
+            time.sleep(1)
+            while count == 0 or ((not test) and count < iterationCount):
+                # Use get_sensor_value() method when HW sensor is available or get_random_value() method to
+                # generate random value for demonstration purposes.
+                if (useRandom):
+                    measurement = get_random_value()
+                else:
+                    measurement = get_sensor_value(sensorUrl)
 
-        SendToPi = (bool)(distutils.util.strtobool(
-            getConfig('Configurations', 'SendToPi')))
-        if (SendToPi):
-            PiWebApiUrl = getConfig('Configurations', 'PiWebApiUrl')
-            userName = getConfig('Configurations', 'UserName')
-            password = getConfig('Configurations', 'Password')
-            VERIFY_SSL = (bool)(distutils.util.strtobool(
-                getConfig('Configurations', 'VerifySSL')))
-            if not VERIFY_SSL:
-                print('You are not verifying the certificate of the PI Web API endpoint. This is insecure and should not be done in production, please properly handle your certificates. ')
-            PiOmfUrl = PiWebApiUrl + '/omf'
+                if(measurement == ERROR_STRING):
+                    print('Unable to get data from the sensor...')
+                else:
+                    value = int(measurement)/10
+                    print("Sending value: ", value)
+                    message = create_data_value(value)
+                    send_message_to_omf_endpoint(endpoint, 'data', message)
 
-        oneTimeSendCreates()
+                time.sleep(delayBetweenRequests)
+                count = count + 1
 
-        count = 0
-        time.sleep(1)
-        while count == 0 or ((not test) and count < iterationCount):
-            # Use getSensorValue() method when HW sensor is available or getRandomValue() method to
-            # generate random value for demonstration purposes.
-            if (useRandom):
-                measurement = getRandomValue()
-            else:
-                measurement = getSensorValue(sensorUrl)
-
-            if(measurement == ERROR_STRING):
-                print('Unable to get data from the sensor...')
-            else:
-                value = int(measurement)/10
-                print("Sending value: ", value)
-                message = createDataValue(value)
-                sendOmfMessageToEndpoint('data', message)
-
-            time.sleep(delayBetweenRequests)
-            count = count + 1
-
-        if (test):
-            oneTimeSendDeletes()
+            if (test):
+                one_time_send_deletes(endpoint)
 
         print('Complete!')
         return True
+
     except Exception as ex:
         print()
-        msg = "Encountered Error: {error}".format(error=ex)
+        msg = 'Encountered Error: {error}'.format(error=ex)
         print(msg)
         print()
         traceback.print_exc()
         print()
         if (test):
-            oneTimeSendDeletes()
+            one_time_send_deletes()
         assert False, msg
-        return False
 
 
 if __name__ == "__main__":
