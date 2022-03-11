@@ -1,5 +1,9 @@
 # Version History
 
+## 1.2.1 / 2022-03-09
+
+- Change UOMs to non-abreviated form
+
 ## 1.2.0 / 2022-02-22
 
 - Updated for AVEVA Data Hub

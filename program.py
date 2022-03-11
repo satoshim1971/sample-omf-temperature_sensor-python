@@ -278,7 +278,7 @@ def one_time_send_type(endpoint, action):
                 "Temperature": {
                     "type": "number",
                     "description": "Temperature readings",
-                    "uom": "°F"
+                    "uom": "degree Fahrenheit"
                 }
             }
         }
