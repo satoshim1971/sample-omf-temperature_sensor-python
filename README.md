@@ -7,7 +7,7 @@
 
 [![Build Status](https://dev.azure.com/osieng/engineering/_apis/build/status/product-readiness/OMF/aveva.sample-omf-temperature_sensor-python?branchName=main)](https://dev.azure.com/osieng/engineering/_build/latest?definitionId=2641&branchName=main)
 
-This sample uses OSIsoft Message Format to send real time data from a temperature sensor (or random sample values) to AVEVA Data Hub, Edge Data Store, and/or PI Web API. Once the sample is started, the sample periodically collects (or generates) values for temperature until it reaches a specified number of values. At each interval it then sends that data to each of the configured OMF endpoints.
+This sample uses Open Message Format to send real time data from a temperature sensor (or random sample values) to AVEVA Data Hub, Edge Data Store, and/or PI Web API. Once the sample is started, the sample periodically collects (or generates) values for temperature until it reaches a specified number of values. At each interval it then sends that data to each of the configured OMF endpoints.
 
 ## To Run this Sample:
 
