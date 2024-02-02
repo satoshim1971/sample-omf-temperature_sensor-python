@@ -1,6 +1,6 @@
 # Temperature Sensor OMF Python Sample
 
-**Version:** 1.2.8
+**Version:** 1.2.9
 
 [![Build Status](https://dev.azure.com/osieng/engineering/_apis/build/status/product-readiness/OMF/aveva.sample-omf-temperature_sensor-python?branchName=main)](https://dev.azure.com/osieng/engineering/_build/latest?definitionId=2641&branchName=main)
 
